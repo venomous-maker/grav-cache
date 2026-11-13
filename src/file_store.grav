@@ -1,0 +1,75 @@
+// file_store.grav — a cache kept as one file per key, under a directory.
+//
+//   Cache.store(new FileCacheStore("/var/cache/app"))
+//
+// Each file starts with the expiry (unix seconds, 0 for never) and a "\n",
+// then the value as it was given (already JSON text, from CacheRepository).
+// A write goes to a temp file first, then a rename (atomic on the same
+// filesystem), so a reader never sees a half-written file.
+import "std"
+import "cache.grav"
+
+namespace cache {
+
+    class FileCacheStore implements CacheStore {
+        public dir: string
+        private static tmpCounter: AtomicInt = new AtomicInt(0)
+
+        constructor(dir: string) {
+            self.dir = dir;
+            if (!Dir.exists(dir)) {
+                if (!Dir.create(dir)) { throw new IOError("cannot create cache directory '${dir}'"); }
+            }
+        }
+
+        fn get(key: string) -> string? {
+            let f = new File(self.path(key));
+            if (!f.exists()) { return null; }
+            let raw = f.readOr("");
+            let nl = Str.indexOf(raw, "\n");
+            if (nl < 0) { return null; }                       // a half-written or foreign file
+            let expires = Integer.parseOr(raw[..nl], -1);
+            if (expires > 0 && expires <= Time.now()) { f.delete(); return null; }
+            return raw[nl + 1..];
+        }
+        fn put(key: string, value: string, ttlSeconds: long) {
+            let expires = ttlSeconds > 0 ? Time.now() + ttlSeconds : 0;
+            let tmp = self.path(key) + ".tmp${Process.pid()}_${FileCacheStore.tmpCounter.increment()}";
+            let f = new File(tmp);
+            if (!f.write("${expires}\n" + value)) { throw new IOError("cannot write to the cache directory '${self.dir}'"); }
+            if (!f.moveTo(self.path(key))) { f.delete(); throw new IOError("cannot write to the cache directory '${self.dir}'"); }
+        }
+        fn forget(key: string) -> bool {
+            let f = new File(self.path(key));
+            if (!f.exists()) { return false; }
+            return f.delete();
+        }
+        // Not atomic across processes (a plain file has no server-side INCR);
+        // fine within one process, or callers that accept the occasional race.
+        fn increment(key: string, by: long) -> long {
+            let raw = self.get(key);
+            let n = (raw == null ? 0 : Integer.parseOr(raw, 0)) + by;
+            self.put(key, "${n}", 0);
+            return n;
+        }
+        fn flush() {
+            for (name in Dir.list(self.dir)) {
+                if (Str.endsWith(name, ".cache")) { new File(self.dir + "/" + name).delete(); }
+            }
+        }
+
+        private fn path(key: string) -> string { return self.dir + "/" + FileCacheStore.hash(key) + ".cache"; }
+        // A filesystem-safe name for any key (FNV-1a hex, so unlike characters,
+        // length and case never collide with the directory's own rules).
+        private static fn hash(key: string) -> string {
+            let h = 0xcbf29ce484222325 as long;
+            for (i in 0..key.length) {
+                h = h ^ (key[i] as long);
+                h = h * (0x100000001b3 as long);
+            }
+            let hi = ((h >> 32) & 0xffffffff) as int;
+            let lo = (h & 0xffffffff) as int;
+            return Str.padLeft(Format.hex(hi), 8, "0") + Str.padLeft(Format.hex(lo), 8, "0");
+        }
+    }
+}

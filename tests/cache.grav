@@ -59,6 +59,10 @@ fn checkStore(store: CacheStore) {
     let v1 = repo.remember("computed", 60, fn() -> any { calls.push(true); return "result"; });
     let v2 = repo.remember("computed", 60, fn() -> any { calls.push(true); return "result"; });
     assertEq("${v1} ${v2} ${calls.size()}", "result result 1");
+    // A cached null is a hit, not a miss.
+    repo.put("cachedNull", null);
+    let v3 = repo.remember("cachedNull", 60, fn() -> any { calls.push(true); return "recomputed"; });
+    assertEq("${v3 == null} ${calls.size()}", "true 1");
 
     // increment/decrement, starting from 0.
     assertEq("${repo.increment("hits")} ${repo.increment("hits", 5)} ${repo.decrement("hits", 2)}", "1 6 4");

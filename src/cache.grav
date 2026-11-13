@@ -104,28 +104,34 @@ namespace cache {
             return v;
         }
         // What is there already, or `f()`'s result, put under `ttlSeconds` and given back.
+        // (One read of the store either way: a hit is decoded from it.)
         fn remember(key: string, ttlSeconds: long, f: fn() -> any) -> any {
-            if (self.has(key)) { return self.get(key); }
+            let raw = self.store.get(key);
+            if (raw != null) { return CacheValue.decode(raw); }
             let v = f();
             self.put(key, v, ttlSeconds);
             return v;
         }
         fn rememberForever(key: string, f: fn() -> any) -> any {
-            if (self.has(key)) { return self.get(key); }
+            let raw = self.store.get(key);
+            if (raw != null) { return CacheValue.decode(raw); }
             let v = f();
             self.forever(key, v);
             return v;
         }
         fn increment(key: string, by: long = 1) -> long { return self.store.increment(key, by); }
         fn decrement(key: string, by: long = 1) -> long { return self.store.increment(key, 0 - by); }
-        // Several at once (missing ones left out).
+        // Several at once (missing ones left out): one store read per key.
         fn many(keys: Array<string>) -> HashMap<string, any> {
             let out = new HashMap<string, any>();
-            for (k in keys) { if (self.has(k)) { out.put(k, self.get(k)); } }
+            for (k in keys) {
+                let raw = self.store.get(k);
+                if (raw != null) { out.put(k, CacheValue.decode(raw)); }
+            }
             return out;
         }
         fn putMany(values: HashMap<string, any>, ttlSeconds: long = 0) {
-            for (k in values.keys()) { self.put(k, values[k], ttlSeconds); }
+            values.forEach(fn(k: string, v: any) { self.put(k, v, ttlSeconds); });
         }
         fn flush() { self.store.flush(); }
     }

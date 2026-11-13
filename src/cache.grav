@@ -31,6 +31,18 @@ namespace cache {
         fn increment(key: string, by: long) -> long
         // Removes every key this store manages.
         fn flush()
+        // The raw text under each of `keys`, in order (null for a missing or
+        // expired one). A store that can fetch several in one go overrides it.
+        fn getMany(keys: Array<string>) -> Array<string?> {
+            let out = new Array<string?>();
+            for (k in keys) { out.push(self.get(k)); }
+            return out;
+        }
+        // Stores every one of `values`; a store that can write several in one
+        // go overrides it.
+        fn putMany(values: HashMap<string, string>, ttlSeconds: long) {
+            for (k in values.keys()) { self.put(k, values[k], ttlSeconds); }
+        }
     }
 
     // Turns a value into the JSON text a store keeps, and back. The plain
@@ -121,17 +133,22 @@ namespace cache {
         }
         fn increment(key: string, by: long = 1) -> long { return self.store.increment(key, by); }
         fn decrement(key: string, by: long = 1) -> long { return self.store.increment(key, 0 - by); }
-        // Several at once (missing ones left out): one store read per key.
+        // Several at once (missing ones left out): one store read for all of
+        // them where the store can (Redis: one MGET), else one per key.
         fn many(keys: Array<string>) -> HashMap<string, any> {
+            let raw = self.store.getMany(keys);
             let out = new HashMap<string, any>();
-            for (k in keys) {
-                let raw = self.store.get(k);
-                if (raw != null) { out.put(k, CacheValue.decode(raw)); }
+            for (i, k in keys) {
+                let r = raw[i];
+                if (r != null) { out.put(k, CacheValue.decode(r)); }
             }
             return out;
         }
+        // (Redis: every SET in one pipelined round trip.)
         fn putMany(values: HashMap<string, any>, ttlSeconds: long = 0) {
-            values.forEach(fn(k: string, v: any) { self.put(k, v, ttlSeconds); });
+            let encoded = new HashMap<string, string>();
+            values.forEach(fn(k: string, v: any) { encoded.put(k, CacheValue.encode(v)); });
+            self.store.putMany(encoded, ttlSeconds);
         }
         fn flush() { self.store.flush(); }
     }

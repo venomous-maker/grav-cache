@@ -96,7 +96,8 @@ Cache.store(new RedisCacheStore(conn, "myapp:cache:"), "sessions")   // a key pr
 
 Expiry is Redis's own (`SET ... EX`); `increment()` is Redis's `INCRBY`
 (atomic on the server); `flush()` deletes only this store's prefix (`SCAN`,
-never `FLUSHDB` — the database may hold other things).
+never `FLUSHDB` — the database may hold other things). `many()` is one `MGET`
+and `putMany()` one pipelined round trip, however many keys they cover.
 
 **Orbit** — a table, through [grav-orbit](https://github.com/venomous-maker/grav-orbit).
 

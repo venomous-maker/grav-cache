@@ -42,9 +42,11 @@ fn checkStore(store: CacheStore) {
 
     // Expiry.
     repo.put("temp", "x", 1);
-    assertEq(repo.get("temp"), "x");
+    let shortLived = new HashMap<string, any>(); shortLived.put("t1", 1); shortLived.put("t2", 2);
+    repo.putMany(shortLived, 1);
+    assertEq("${repo.get("temp")} ${repo.many(["t1", "t2"]).size()}", "x 2");
     Time.sleepMs(1100);
-    assertEq(repo.get("temp"), null);
+    assertEq("${repo.get("temp") == null} ${repo.many(["t1", "t2"]).size()}", "true 0");
 
     // forever() never expires.
     repo.forever("permanent", "stays");

@@ -26,6 +26,24 @@ namespace cache {
         fn has(key: string) -> bool { return self.conn.exists(self.prefix + key); }
         // Atomic on the server (Redis's own INCRBY); starts from 0.
         fn increment(key: string, by: long) -> long { return self.conn.incrBy(self.prefix + key, by); }
+        // One MGET for all of them.
+        fn getMany(keys: Array<string>) -> Array<string?> {
+            if (keys.size() == 0) { return new Array<string?>(); }
+            let full = new Array<string>();
+            for (k in keys) { full.push(self.prefix + k); }
+            return self.conn.mGet(full);
+        }
+        // Every SET in one pipeline (one round trip).
+        fn putMany(values: HashMap<string, string>, ttlSeconds: long) {
+            if (values.size() == 0) { return; }
+            let prefix = self.prefix;
+            self.conn.pipeline(fn(p: RedisPipeline) {
+                values.forEach(fn(k: string, v: string) {
+                    if (ttlSeconds > 0) { p.command("SET", [prefix + k, v, "EX", ttlSeconds]); }
+                    else { p.command("SET", [prefix + k, v]); }
+                });
+            });
+        }
         // Deletes every key under this store's prefix (SCAN, not FLUSHDB: the
         // database may hold other things), one DEL per SCAN step.
         fn flush() {

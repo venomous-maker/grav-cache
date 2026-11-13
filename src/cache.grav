@@ -1,0 +1,165 @@
+// cache.grav — Cache: get/put/remember a value under a key, on whichever
+// store backs it (a file, Redis, or a database table through grav-orbit).
+//
+//   Cache.store(new FileCacheStore("/tmp/cache"))
+//   Cache.put("greeting", "hello", 60)             // expires in 60 seconds
+//   Cache.get("greeting")                          // "hello"
+//   Cache.remember("user:1", 300, fn() -> any { return loadUser(1) })
+//
+// A value is kept as JSON text: null, bool, a whole or fractional number, a
+// string, DateTime, Decimal, and Array/HashMap of those — the same values
+// `str(v)`/reflection already turn into JSON elsewhere. Anything else, keep
+// as a map yourself first (`u.toMap()` on an Orbit model, say).
+import "std"
+
+namespace cache {
+
+    // What a cache store does with already-encoded text (see the top of this
+    // file for what Cache itself adds on top: JSON, remember(), ...).
+    interface CacheStore {
+        // The raw text under `key`, or null when it is missing or expired.
+        fn get(key: string) -> string?
+        // Stores it; `ttlSeconds` 0 keeps it until forget()/flush() (forever()).
+        fn put(key: string, value: string, ttlSeconds: long)
+        fn forever(key: string, value: string) { self.put(key, value, 0) }
+        // Whether `get(key)` would give something.
+        fn has(key: string) -> bool { return self.get(key) != null; }
+        // Removes it; whether there was one.
+        fn forget(key: string) -> bool
+        // Adds `by` to the number at `key` (0 first), atomically where the
+        // store can; a store that cannot throws StateError.
+        fn increment(key: string, by: long) -> long
+        // Removes every key this store manages.
+        fn flush()
+    }
+
+    // Turns a value into the JSON text a store keeps, and back. The plain
+    // values any store round-trips: null, bool, numbers, strings, DateTime,
+    // Decimal, and Array<any>/HashMap<string, any> of those.
+    class CacheValue {
+        static fn encode(v: any) -> string { return CacheValue.toJson(v).toJson(); }
+        static fn decode(text: string) -> any { return CacheValue.fromJson(Json.parse(text)); }
+        private static fn toJson(v: any) -> JsonValue {
+            if (v == null) { return Json.nil(); }
+            if (v is bool) { return Json.of(v as bool); }
+            if (v is long) { return Json.of(v as long); }
+            if (v is int) { return Json.of((v as int) as long); }
+            if (v is float) { return Json.of(v as float); }
+            if (v is double) { return Json.of(v as double); }
+            if (v is string) { return Json.of(v as string); }
+            if (v is DateTime) { return Json.of((v as DateTime).toString()); }
+            if (v is Decimal) { return Json.of((v as Decimal).toString()); }
+            if (v is JsonValue) { return v as JsonValue; }
+            if (v is HashMap<string, any>) {
+                let o = Json.object();
+                let m = v as HashMap<string, any>;
+                for (k in m.keys()) { o.set(k, CacheValue.toJson(m[k])); }
+                return o;
+            }
+            if (v is Array<any>) {
+                let a = Json.array();
+                for (x in v as Array<any>) { a.push(CacheValue.toJson(x)); }
+                return a;
+            }
+            throw new ValueError("cache values are JSON-plain (null, bool, numbers, strings, DateTime, " +
+                                 "Decimal, Array/HashMap of those): got " + typename(v));
+        }
+        private static fn fromJson(j: JsonValue) -> any {
+            if (j == null || j.isNull()) { return null; }
+            if (j.isBool()) { return j.asBool(); }
+            if (j.isInteger()) { return j.asLong(); }
+            if (j.isNumber()) { return j.asFloat(); }
+            if (j.isString()) { return j.asString(); }
+            if (j.isArray()) {
+                let out = new Array<any>();
+                for (x in j.asArray()) { out.push(CacheValue.fromJson(x)); }
+                return out;
+            }
+            let out = new HashMap<string, any>();
+            for (k in j.keys()) { out.put(k, CacheValue.fromJson(j.get(k))); }
+            return out;
+        }
+    }
+
+    // A store, with the typed get/put/remember layer on top (see the top of
+    // this file). `Cache`'s static methods forward to one of these (the
+    // default, or a named one).
+    class CacheRepository {
+        public store: CacheStore
+        constructor(store: CacheStore) { self.store = store; }
+
+        fn get(key: string, fallback: any = null) -> any {
+            let raw = self.store.get(key);
+            return raw == null ? fallback : CacheValue.decode(raw);
+        }
+        fn put(key: string, value: any, ttlSeconds: long = 0) { self.store.put(key, CacheValue.encode(value), ttlSeconds); }
+        fn forever(key: string, value: any) { self.store.forever(key, CacheValue.encode(value)); }
+        fn has(key: string) -> bool { return self.store.has(key); }
+        // Removes it, whether there was one.
+        fn forget(key: string) -> bool { return self.store.forget(key); }
+        // Reads it, then removes it.
+        fn pull(key: string, fallback: any = null) -> any {
+            let v = self.get(key, fallback);
+            self.forget(key);
+            return v;
+        }
+        // What is there already, or `f()`'s result, put under `ttlSeconds` and given back.
+        fn remember(key: string, ttlSeconds: long, f: fn() -> any) -> any {
+            if (self.has(key)) { return self.get(key); }
+            let v = f();
+            self.put(key, v, ttlSeconds);
+            return v;
+        }
+        fn rememberForever(key: string, f: fn() -> any) -> any {
+            if (self.has(key)) { return self.get(key); }
+            let v = f();
+            self.forever(key, v);
+            return v;
+        }
+        fn increment(key: string, by: long = 1) -> long { return self.store.increment(key, by); }
+        fn decrement(key: string, by: long = 1) -> long { return self.store.increment(key, 0 - by); }
+        // Several at once (missing ones left out).
+        fn many(keys: Array<string>) -> HashMap<string, any> {
+            let out = new HashMap<string, any>();
+            for (k in keys) { if (self.has(k)) { out.put(k, self.get(k)); } }
+            return out;
+        }
+        fn putMany(values: HashMap<string, any>, ttlSeconds: long = 0) {
+            for (k in values.keys()) { self.put(k, values[k], ttlSeconds); }
+        }
+        fn flush() { self.store.flush(); }
+    }
+
+    // The stores a program uses, by name (see the top of this file).
+    class Cache {
+        private static named: HashMap<string, CacheRepository> = new HashMap<string, CacheRepository>()
+
+        // Makes `store` the one called `name` ("default" otherwise).
+        static fn store(store: CacheStore, name: string = "default") { Cache.named.put(name, new CacheRepository(store)); }
+        static fn repository(name: string = "default") -> CacheRepository {
+            let key = name == "" ? "default" : name;
+            let r = Cache.named.getOr(key, null);
+            if (r == null) {
+                throw new StateError(key == "default" ? "no cache store: call Cache.store(aStore) first"
+                    : "no cache store called '" + key + "': Cache.store(aStore, \"" + key + "\")");
+            }
+            return r;
+        }
+        static fn hasStore(name: string = "default") -> bool { return Cache.named.containsKey(name == "" ? "default" : name); }
+
+        // ── the default store, forwarded ─────────────────────────────────────────
+        static fn get(key: string, fallback: any = null) -> any { return Cache.repository().get(key, fallback); }
+        static fn put(key: string, value: any, ttlSeconds: long = 0) { Cache.repository().put(key, value, ttlSeconds); }
+        static fn forever(key: string, value: any) { Cache.repository().forever(key, value); }
+        static fn has(key: string) -> bool { return Cache.repository().has(key); }
+        static fn forget(key: string) -> bool { return Cache.repository().forget(key); }
+        static fn pull(key: string, fallback: any = null) -> any { return Cache.repository().pull(key, fallback); }
+        static fn remember(key: string, ttlSeconds: long, f: fn() -> any) -> any { return Cache.repository().remember(key, ttlSeconds, f); }
+        static fn rememberForever(key: string, f: fn() -> any) -> any { return Cache.repository().rememberForever(key, f); }
+        static fn increment(key: string, by: long = 1) -> long { return Cache.repository().increment(key, by); }
+        static fn decrement(key: string, by: long = 1) -> long { return Cache.repository().decrement(key, by); }
+        static fn many(keys: Array<string>) -> HashMap<string, any> { return Cache.repository().many(keys); }
+        static fn putMany(values: HashMap<string, any>, ttlSeconds: long = 0) { Cache.repository().putMany(values, ttlSeconds); }
+        static fn flush() { Cache.repository().flush(); }
+    }
+}

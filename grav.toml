@@ -1,0 +1,7 @@
+name = "grav-cache"
+lib = "src/all.grav"
+paths = ["src"]
+
+[dependencies]
+grav-redis = "github.com/venomous-maker/grav-redis"
+grav-orbit = "github.com/venomous-maker/grav-orbit"

@@ -24,20 +24,19 @@ namespace cache {
 
         fn get(key: string) -> string? {
             let f = new File(self.path(key));
-            if (!f.exists()) { return null; }
-            let raw = f.readOr("");
+            let raw = f.readOr("");                            // "" when there is no such file
             let nl = Str.indexOf(raw, "\n");
-            if (nl < 0) { return null; }                       // a half-written or foreign file
+            if (nl < 0) { return null; }                       // missing, or a foreign file
             let expires = Integer.parseOr(raw[..nl], -1);
             if (expires > 0 && expires <= Time.now()) { f.delete(); return null; }
             return raw[nl + 1..];
         }
         fn put(key: string, value: string, ttlSeconds: long) {
             let expires = ttlSeconds > 0 ? Time.now() + ttlSeconds : 0;
-            let tmp = self.path(key) + ".tmp${Process.pid()}_${FileCacheStore.tmpCounter.increment()}";
-            let f = new File(tmp);
+            let target = self.path(key);
+            let f = new File(target + ".tmp${Process.pid()}_${FileCacheStore.tmpCounter.increment()}");
             if (!f.write("${expires}\n" + value)) { throw new IOError("cannot write to the cache directory '${self.dir}'"); }
-            if (!f.moveTo(self.path(key))) { f.delete(); throw new IOError("cannot write to the cache directory '${self.dir}'"); }
+            if (!f.moveTo(target)) { f.delete(); throw new IOError("cannot write to the cache directory '${self.dir}'"); }
         }
         fn forget(key: string) -> bool {
             let f = new File(self.path(key));

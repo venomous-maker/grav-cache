@@ -1,0 +1,41 @@
+// redis_store.grav — a cache kept in Redis (see grav-redis). Needs grav-redis
+// as a dependency too.
+//
+//   Cache.store(new RedisCacheStore(RedisConnection.open(url)))
+import "std"
+import "grav-redis"
+import "cache.grav"
+
+namespace cache {
+
+    class RedisCacheStore implements CacheStore {
+        public conn: RedisConnection
+        // Every key goes in as `prefix + key`, so one Redis database can hold
+        // the cache alongside other data without colliding (and flush() only
+        // touches its own keys, never the whole database).
+        public prefix: string
+
+        constructor(conn: RedisConnection, prefix: string = "cache:") { self.conn = conn; self.prefix = prefix; }
+
+        fn get(key: string) -> string? { return self.conn.get(self.prefix + key); }
+        fn put(key: string, value: string, ttlSeconds: long) {
+            if (ttlSeconds > 0) { self.conn.set(self.prefix + key, value, ttlSeconds); }
+            else { self.conn.set(self.prefix + key, value); }
+        }
+        fn forget(key: string) -> bool { return self.conn.del(self.prefix + key) > 0; }
+        fn has(key: string) -> bool { return self.conn.exists(self.prefix + key); }
+        // Atomic on the server (Redis's own INCRBY); starts from 0.
+        fn increment(key: string, by: long) -> long { return self.conn.incrBy(self.prefix + key, by); }
+        // Deletes every key under this store's prefix (SCAN, not FLUSHDB: the
+        // database may hold other things).
+        fn flush() {
+            let cursor = 0 as long;
+            while (true) {
+                let step = self.conn.scan(cursor, self.prefix + "*", 500);
+                if (step.second.size() > 0) { for (k in step.second) { self.conn.del(k); } }
+                cursor = step.first;
+                if (cursor == 0) { break; }
+            }
+        }
+    }
+}

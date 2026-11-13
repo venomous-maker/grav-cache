@@ -1,0 +1,74 @@
+// orbit_store.grav — a cache kept in a database table, through grav-orbit.
+//
+//   DB.connect(Sqlite.open("app.db"))
+//   CacheEntry.createTable()
+//   Cache.store(new OrbitCacheStore())
+import "std"
+import "grav-orbit"
+import "cache.grav"
+
+namespace cache {
+
+    // The table OrbitCacheStore reads and writes (createTable() makes it).
+    class CacheEntry extends Model {
+        public id: long = 0
+        @Column(length: 255, unique: true) public cacheKey: string = ""
+        public cacheValue: string = ""
+        // Null: never expires.
+        public expiresAt: DateTime? = null
+    }
+
+    class OrbitCacheStore implements CacheStore {
+        // "" for the default DB.connect()ion.
+        public connection: string
+
+        constructor(connection: string = "") { self.connection = connection; }
+
+        fn get(key: string) -> string? {
+            let e = self.find(key);
+            if (e == null) { return null; }
+            if (e.expiresAt != null && e.expiresAt <= DateTime.now()) { e.forceDelete(); return null; }
+            return e.cacheValue;
+        }
+        fn put(key: string, value: string, ttlSeconds: long) {
+            let expires = ttlSeconds > 0 ? DateTime.now().addSeconds(ttlSeconds) : null;
+            let a = new HashMap<string, any>();
+            a.put("cacheKey", key);
+            let b = new HashMap<string, any>();
+            b.put("cacheValue", value);
+            b.put("expiresAt", expires);
+            self.query().updateOrCreate(a, b);
+        }
+        fn forget(key: string) -> bool {
+            let e = self.find(key);
+            if (e == null) { return false; }
+            return e.forceDelete();
+        }
+        // Atomic through a transaction (a plain UPDATE could race between two
+        // readers; this re-reads inside the transaction it writes in).
+        fn increment(key: string, by: long) -> long {
+            let result = new Array<long>();
+            DB.transaction(self.connection == "" ? "default" : self.connection, fn() {
+                let e = self.find(key);
+                let n = (e == null ? 0 : Integer.parseOr(e.cacheValue, 0)) + by;
+                if (e == null) {
+                    let a = new HashMap<string, any>(); a.put("cacheKey", key); a.put("cacheValue", "${n}");
+                    CacheEntry.make(a).save();
+                } else {
+                    e.cacheValue = "${n}";
+                    e.save();
+                }
+                result.push(n);
+            });
+            return result[0];
+        }
+        fn flush() { self.query().delete(); }
+
+        private fn find(key: string) -> CacheEntry { return self.query().firstWhere("cacheKey", key); }
+        private fn query() -> Query<CacheEntry> {
+            let q = CacheEntry.query();
+            if (self.connection != "") { q.on(DB.connection(self.connection)); }
+            return q;
+        }
+    }
+}

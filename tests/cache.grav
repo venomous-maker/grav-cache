@@ -1,0 +1,109 @@
+// grav-cache's tests: CacheRepository's get/put/remember layer, and each
+// store (file, Redis — REDIS_URL, default redis://127.0.0.1:6379/9 — and
+// Orbit, SQLite in memory).
+import "std"
+import "../src/all.grav"
+use cache.*
+use orbit.*
+use db.*
+
+fn redisUrl() -> string {
+    let u = env("REDIS_URL");
+    return u == "" ? "redis://127.0.0.1:6379/9" : u;
+}
+
+// Runs the same checks against any store (each test below picks the backend).
+fn checkStore(store: CacheStore) {
+    store.flush();
+    let repo = new CacheRepository(store);
+    assertEq(repo.get("missing"), null);
+    assertEq(repo.get("missing", "fallback"), "fallback");
+
+    repo.put("name", "Ada");
+    assertEq(repo.get("name"), "Ada");
+    assertEq(repo.has("name"), true);
+    assertEq(repo.forget("name"), true);
+    assertEq(repo.has("name"), false);
+    assertEq(repo.forget("name"), false);
+
+    // Every JSON-plain kind round-trips.
+    repo.put("n", 42);
+    repo.put("f", 1.5);
+    repo.put("b", true);
+    repo.put("nil", null);
+    let list = new Array<any>(); list.push(1); list.push("two"); list.push(false);
+    repo.put("list", list);
+    let map = new HashMap<string, any>(); map.put("a", 1); map.put("b", "two");
+    repo.put("map", map);
+    assertEq("${repo.get("n")} ${repo.get("f")} ${repo.get("b")} ${repo.get("nil") == null}", "42 1.5 true true");
+    assertEq("${repo.get("list")}", "[1, two, false]");
+    let backMap = repo.get("map") as HashMap<string, any>;
+    assertEq("${backMap["a"]} ${backMap["b"]}", "1 two");
+
+    // Expiry.
+    repo.put("temp", "x", 1);
+    assertEq(repo.get("temp"), "x");
+    Time.sleepMs(1100);
+    assertEq(repo.get("temp"), null);
+
+    // forever() never expires.
+    repo.forever("permanent", "stays");
+    assertEq(repo.get("permanent"), "stays");
+
+    // pull(): read then forget.
+    repo.put("once", "value");
+    assertEq("${repo.pull("once")} ${repo.has("once")}", "value false");
+
+    // remember(): computed once, cached after.
+    let calls = new Array<bool>();
+    let v1 = repo.remember("computed", 60, fn() -> any { calls.push(true); return "result"; });
+    let v2 = repo.remember("computed", 60, fn() -> any { calls.push(true); return "result"; });
+    assertEq("${v1} ${v2} ${calls.size()}", "result result 1");
+
+    // increment/decrement, starting from 0.
+    assertEq("${repo.increment("hits")} ${repo.increment("hits", 5)} ${repo.decrement("hits", 2)}", "1 6 4");
+
+    // many/putMany.
+    let values = new HashMap<string, any>(); values.put("x", 1); values.put("y", 2);
+    repo.putMany(values);
+    let got = repo.many(["x", "y", "nope"]);
+    assertEq("${got.size()} ${got["x"]} ${got["y"]}", "2 1 2");
+
+    repo.flush();
+    assertEq(repo.has("permanent"), false);
+}
+
+test "FileCacheStore" {
+    let dir = "${Dir.temp()}/grav-cache-test-${Process.pid()}";
+    checkStore(new FileCacheStore(dir));
+    Dir.removeAll(dir);
+}
+
+test "RedisCacheStore" {
+    checkStore(new RedisCacheStore(RedisConnection.open(redisUrl()), "cachetest:"));
+}
+
+test "OrbitCacheStore" {
+    DB.connect(Sqlite.open(":memory:"));
+    CacheEntry.createTable();
+    checkStore(new OrbitCacheStore());
+}
+
+test "the Cache facade: named stores" {
+    Cache.store(new FileCacheStore("${Dir.temp()}/grav-cache-facade-${Process.pid()}"), "facade_test");
+    assertEq(Cache.hasStore("facade_test"), true);
+    Cache.repository("facade_test").put("k", "v");
+    assertEq(Cache.repository("facade_test").get("k"), "v");
+    let msg = "";
+    try { Cache.repository("nope_at_all") } catch (e: StateError) { msg = e.message() }
+    assertEq(msg, "no cache store called 'nope_at_all': Cache.store(aStore, \"nope_at_all\")");
+}
+
+test "a value that is not JSON-plain is a clear error" {
+    let store = new RedisCacheStore(RedisConnection.open(redisUrl()), "cachetest2:");
+    let repo = new CacheRepository(store);
+    let msg = "";
+    try { repo.put("bad", new Mutex()) } catch (e: ValueError) { msg = e.message() }
+    assertEq(Str.startsWith(msg, "cache values are JSON-plain"), true);
+    store.flush();
+}

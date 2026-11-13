@@ -27,12 +27,12 @@ namespace cache {
         // Atomic on the server (Redis's own INCRBY); starts from 0.
         fn increment(key: string, by: long) -> long { return self.conn.incrBy(self.prefix + key, by); }
         // Deletes every key under this store's prefix (SCAN, not FLUSHDB: the
-        // database may hold other things).
+        // database may hold other things), one DEL per SCAN step.
         fn flush() {
             let cursor = 0 as long;
             while (true) {
                 let step = self.conn.scan(cursor, self.prefix + "*", 500);
-                if (step.second.size() > 0) { for (k in step.second) { self.conn.del(k); } }
+                if (step.second.size() > 0) { self.conn.del(step.second); }
                 cursor = step.first;
                 if (cursor == 0) { break; }
             }

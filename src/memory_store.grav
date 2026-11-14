@@ -1,0 +1,115 @@
+// memory_store.grav — a cache in this process's memory: tests, one-process
+// apps, and a fast first level in front of a shared store. Thread-safe;
+// add(), increment() and forgetIfValue() are atomic.
+//
+//   Cache.store(new MemoryCacheStore())
+//   Cache.store(new MemoryCacheStore(10000), "local")      // at most 10,000 keys
+import "std"
+import "cache.grav"
+
+namespace cache {
+
+    class MemoryCacheEntry {
+        public value: string
+        // Unix milliseconds; 0 for never.
+        public expires: long
+        constructor(value: string, expires: long) { self.value = value; self.expires = expires; }
+    }
+
+    class MemoryCacheStore implements CacheStore {
+        private entries: HashMap<string, MemoryCacheEntry>
+        private lock: Mutex
+        // At most this many keys (0: no limit); past it, expired keys go first,
+        // then the oldest written.
+        public maxKeys: int
+        private order: Deque<string>
+
+        constructor(maxKeys: int = 0) {
+            self.entries = new HashMap<string, MemoryCacheEntry>();
+            self.lock = new Mutex();
+            self.maxKeys = maxKeys;
+            self.order = new Deque<string>();
+        }
+        private static fn deadline(ttlSeconds: long) -> long { return ttlSeconds > 0 ? Time.nowMs() + ttlSeconds * 1000 : 0; }
+        // (under the lock) the live entry, dropping an expired one.
+        private fn live(key: string) -> MemoryCacheEntry {
+            let e = self.entries.getOr(key, null);
+            if (e != null && e.expires > 0 && e.expires <= Time.nowMs()) { self.entries.remove(key); return null; }
+            return e;
+        }
+        private fn store(key: string, e: MemoryCacheEntry) {
+            if (!self.entries.containsKey(key)) {
+                self.order.pushBack(key);
+                if (self.maxKeys > 0 && self.entries.size() >= self.maxKeys) { self.evict(); }
+            }
+            self.entries.put(key, e);
+        }
+        private fn evict() {
+            let now = Time.nowMs();
+            let expired = new Array<string>();
+            self.entries.forEach(fn(k: string, e: MemoryCacheEntry) { if (e.expires > 0 && e.expires <= now) { expired.push(k); } });
+            for (k in expired) { self.entries.remove(k); }
+            while (self.entries.size() >= self.maxKeys && !self.order.isEmpty()) {
+                let k = self.order.popFront();
+                self.entries.remove(k);
+            }
+        }
+
+        fn get(key: string) -> string? {
+            self.lock.lock();
+            let e = self.live(key);
+            self.lock.unlock();
+            return e == null ? null : e.value;
+        }
+        fn put(key: string, value: string, ttlSeconds: long) {
+            self.lock.lock();
+            self.store(key, new MemoryCacheEntry(value, MemoryCacheStore.deadline(ttlSeconds)));
+            self.lock.unlock();
+        }
+        fn forget(key: string) -> bool {
+            self.lock.lock();
+            let had = self.live(key) != null;
+            self.entries.remove(key);
+            self.lock.unlock();
+            return had;
+        }
+        fn increment(key: string, by: long) -> long {
+            self.lock.lock();
+            let e = self.live(key);
+            let n = (e == null ? 0 : Integer.parseOr(e.value, 0)) + by;
+            if (e == null) { self.store(key, new MemoryCacheEntry("${n}", 0)); } else { e.value = "${n}"; }
+            self.lock.unlock();
+            return n;
+        }
+        fn flush() {
+            self.lock.lock();
+            self.entries.clear();
+            self.order.clear();
+            self.lock.unlock();
+        }
+        fn add(key: string, value: string, ttlSeconds: long) -> bool {
+            self.lock.lock();
+            let free = self.live(key) == null;
+            if (free) { self.store(key, new MemoryCacheEntry(value, MemoryCacheStore.deadline(ttlSeconds))); }
+            self.lock.unlock();
+            return free;
+        }
+        fn forgetIfValue(key: string, value: string) -> bool {
+            self.lock.lock();
+            let e = self.live(key);
+            let hit = e != null && e.value == value;
+            if (hit) { self.entries.remove(key); }
+            self.lock.unlock();
+            return hit;
+        }
+        fn ttl(key: string) -> long {
+            self.lock.lock();
+            let e = self.live(key);
+            self.lock.unlock();
+            if (e == null) { return -1; }
+            return e.expires == 0 ? 0 : (e.expires - Time.nowMs() + 999) / 1000;
+        }
+        // How many keys it holds (expired ones not yet dropped included).
+        fn size() -> int { self.lock.lock(); let n = self.entries.size(); self.lock.unlock(); return n; }
+    }
+}

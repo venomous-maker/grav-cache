@@ -1,7 +1,8 @@
-// all.grav — `import "grav-cache"`: Cache, CacheRepository, and every store
-// (FileCacheStore, RedisCacheStore through grav-redis, OrbitCacheStore
-// through grav-orbit).
+// all.grav — `import "grav-cache"`: Cache, CacheRepository, CacheLock,
+// RateLimiter, and every store (MemoryCacheStore, FileCacheStore,
+// RedisCacheStore through grav-redis, OrbitCacheStore through grav-orbit).
 import "cache.grav"
+import "memory_store.grav"
 import "file_store.grav"
 import "redis_store.grav"
 import "orbit_store.grav"

@@ -1,5 +1,7 @@
 // cache.grav — Cache: get/put/remember a value under a key, on whichever
-// store backs it (a file, Redis, or a database table through grav-orbit).
+// store backs it (memory, a file, Redis, or a database table through
+// grav-orbit), plus locks (Cache.lock) and rate limiting (Cache.limiter) on
+// top of any store.
 //
 //   Cache.store(new FileCacheStore("/tmp/cache"))
 //   Cache.put("greeting", "hello", 60)             // expires in 60 seconds
@@ -43,6 +45,22 @@ namespace cache {
         fn putMany(values: HashMap<string, string>, ttlSeconds: long) {
             for (k in values.keys()) { self.put(k, values[k], ttlSeconds); }
         }
+        // Stores it only when the key is missing; whether it did. Atomic where
+        // the store can be (Redis: SET NX; memory: under its lock); this default
+        // checks and then writes, which can race between processes.
+        fn add(key: string, value: string, ttlSeconds: long) -> bool {
+            if (self.has(key)) { return false; }
+            self.put(key, value, ttlSeconds);
+            return true;
+        }
+        // Removes the key only while it still holds `value` (releasing a lock
+        // only its owner holds); whether it did. Atomic on Redis and in memory.
+        fn forgetIfValue(key: string, value: string) -> bool {
+            let v = self.get(key);
+            return v != null && v == value && self.forget(key);
+        }
+        // Seconds until the key expires: 0 for never, -1 when it is missing.
+        fn ttl(key: string) -> long { return self.has(key) ? 0 : -1; }
     }
 
     // Turns a value into the JSON text a store keeps, and back. The plain
@@ -151,6 +169,132 @@ namespace cache {
             self.store.putMany(encoded, ttlSeconds);
         }
         fn flush() { self.store.flush(); }
+        // Stores it only when the key is missing; whether it did.
+        fn add(key: string, value: any, ttlSeconds: long = 0) -> bool { return self.store.add(key, CacheValue.encode(value), ttlSeconds); }
+        // A lock called `name`, held for at most `seconds` (0: until released),
+        // owned by `owner` (a random token by default). Take it with get() or block().
+        fn lock(name: string, seconds: long = 0, owner: string = "") -> CacheLock { return new CacheLock(self.store, name, seconds, owner); }
+        // The lock called `name` as held by `owner` (to release it from another
+        // process or job that was handed the owner token).
+        fn restoreLock(name: string, owner: string) -> CacheLock { return new CacheLock(self.store, name, 0, owner); }
+        // A rate limiter whose counters live in this store.
+        fn limiter() -> RateLimiter { return new RateLimiter(self.store); }
+    }
+
+    // A lock several processes (or threads) share through a cache store, as
+    // Laravel's Cache::lock(): only one owner holds it at a time, it lapses
+    // after its lifetime (so a crashed holder cannot keep it), and only its
+    // owner releases it.
+    //
+    //   let lock = Cache.lock("reports:daily", 120)
+    //   if (lock.get()) { try { build() } finally { lock.release() } }
+    //   lock.block(5, fn() { build() })        // waits up to 5 seconds for it
+    class CacheLock {
+        public name: string
+        public seconds: long
+        private store: CacheStore
+        private ownerToken: string
+        // How long block() waits between tries, in milliseconds.
+        public retryMs: int = 100
+
+        constructor(store: CacheStore, name: string, seconds: long, owner: string = "") {
+            self.store = store;
+            self.name = name;
+            self.seconds = seconds;
+            self.ownerToken = owner == "" ? Hash.randomToken(16) : owner;
+        }
+        private fn key() -> string { return "lock:" + self.name; }
+        // Takes it if it is free; whether this owner now holds it.
+        fn get() -> bool { return self.store.add(self.key(), self.ownerToken, self.seconds); }
+        // Takes it and runs `f` while holding it (released afterwards, also when
+        // f throws); whether it ran.
+        fn run(f: fn()) -> bool {
+            if (!self.get()) { return false; }
+            try { f(); } finally { self.release(); }
+            return true;
+        }
+        // Waits up to `waitSeconds` for it; LockTimeoutException when it stays taken.
+        fn block(waitSeconds: long) {
+            let deadline = Time.nowMs() + waitSeconds * 1000;
+            while (!self.get()) {
+                if (Time.nowMs() >= deadline) { throw new LockTimeoutException(self.name); }
+                Time.sleepMs(self.retryMs as long);
+            }
+        }
+        // block(), then `f` while holding it.
+        fn blockRun(waitSeconds: long, f: fn()) {
+            self.block(waitSeconds);
+            try { f(); } finally { self.release(); }
+        }
+        // Lets go, if this owner holds it; whether it did.
+        fn release() -> bool { return self.store.forgetIfValue(self.key(), self.ownerToken); }
+        // Lets go whoever holds it.
+        fn forceRelease() { self.store.forget(self.key()); }
+        fn owner() -> string { return self.ownerToken; }
+        // Whether it is held at all (by anyone).
+        fn isLocked() -> bool { return self.store.has(self.key()); }
+        // Whether this owner is the one holding it.
+        fn isOwnedByCurrentProcess() -> bool { let v = self.store.get(self.key()); return v != null && v == self.ownerToken; }
+    }
+
+    // block() gave up waiting.
+    class LockTimeoutException extends Exception {
+        constructor(name: string) { super("timed out waiting for the lock '" + name + "'"); }
+        public fn kind() -> string { return "LockTimeoutException"; }
+    }
+
+    // Counting attempts in a window, as Laravel's RateLimiter: login tries,
+    // API calls, jobs that call a rate-limited service.
+    //
+    //   let limiter = Cache.limiter()
+    //   if (limiter.tooManyAttempts("login:" + ip, 5)) { … wait limiter.availableIn("login:" + ip) seconds }
+    //   limiter.hit("login:" + ip, 60)
+    //   limiter.attempt("send:" + userId, 3, fn() { send() }, 60)
+    class RateLimiter {
+        private store: CacheStore
+        constructor(store: CacheStore) { self.store = store; }
+        private static fn clean(key: string) -> string { return "limiter:" + key; }
+
+        // Counts an attempt in a window of `decaySeconds` (the window starts at
+        // the first attempt); the count so far.
+        fn hit(key: string, decaySeconds: long = 60) -> long { return self.increment(key, decaySeconds, 1); }
+        fn increment(key: string, decaySeconds: long = 60, amount: long = 1) -> long {
+            let k = RateLimiter.clean(key);
+            // (the timer marks when the window ends; the counter starts at 0 with the same lifetime)
+            self.store.add(k + ":timer", "${Time.now() + decaySeconds}", decaySeconds);
+            self.store.add(k, "0", decaySeconds);
+            return self.store.increment(k, amount);              // (every store's increment keeps the expiry)
+        }
+        fn decrement(key: string, decaySeconds: long = 60, amount: long = 1) -> long { return self.increment(key, decaySeconds, -amount); }
+        fn attempts(key: string) -> long {
+            let v = self.store.get(RateLimiter.clean(key));
+            return v == null ? 0 : Integer.parseOr(v, 0);
+        }
+        fn tooManyAttempts(key: string, maxAttempts: long) -> bool {
+            if (self.attempts(key) < maxAttempts) { return false; }
+            return self.store.has(RateLimiter.clean(key) + ":timer");
+        }
+        fn remaining(key: string, maxAttempts: long) -> long { let r = maxAttempts - self.attempts(key); return r < 0 ? 0 : r; }
+        fn retriesLeft(key: string, maxAttempts: long) -> long { return self.remaining(key, maxAttempts); }
+        // Seconds until the window ends (0 when there is none).
+        fn availableIn(key: string) -> long {
+            let v = self.store.get(RateLimiter.clean(key) + ":timer");
+            if (v == null) { return 0; }
+            let left = Integer.parseOr(v, 0) - Time.now();
+            return left < 0 ? 0 : left;
+        }
+        // Runs `f` and counts it, unless the limit is reached; whether it ran.
+        fn attempt(key: string, maxAttempts: long, f: fn(), decaySeconds: long = 60) -> bool {
+            if (self.tooManyAttempts(key, maxAttempts)) { return false; }
+            f();
+            self.hit(key, decaySeconds);
+            return true;
+        }
+        fn resetAttempts(key: string) -> bool { return self.store.forget(RateLimiter.clean(key)); }
+        fn clear(key: string) {
+            self.store.forget(RateLimiter.clean(key));
+            self.store.forget(RateLimiter.clean(key) + ":timer");
+        }
     }
 
     // The stores a program uses, by name (see the top of this file).
@@ -184,5 +328,9 @@ namespace cache {
         static fn many(keys: Array<string>) -> HashMap<string, any> { return Cache.repository().many(keys); }
         static fn putMany(values: HashMap<string, any>, ttlSeconds: long = 0) { Cache.repository().putMany(values, ttlSeconds); }
         static fn flush() { Cache.repository().flush(); }
+        static fn add(key: string, value: any, ttlSeconds: long = 0) -> bool { return Cache.repository().add(key, value, ttlSeconds); }
+        static fn lock(name: string, seconds: long = 0, owner: string = "") -> CacheLock { return Cache.repository().lock(name, seconds, owner); }
+        static fn restoreLock(name: string, owner: string) -> CacheLock { return Cache.repository().restoreLock(name, owner); }
+        static fn limiter() -> RateLimiter { return Cache.repository().limiter(); }
     }
 }

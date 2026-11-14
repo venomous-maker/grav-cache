@@ -45,11 +45,28 @@ namespace cache {
         }
         // Not atomic across processes (a plain file has no server-side INCR);
         // fine within one process, or callers that accept the occasional race.
+        // The key's expiry stays as it was.
         fn increment(key: string, by: long) -> long {
-            let raw = self.get(key);
-            let n = (raw == null ? 0 : Integer.parseOr(raw, 0)) + by;
-            self.put(key, "${n}", 0);
+            let raw = self.rawEntry(key);
+            let n = (raw.size() == 0 ? 0 : Integer.parseOr(raw[1], 0)) + by;
+            let expires = raw.size() == 0 ? 0 : Integer.parseOr(raw[0], 0);
+            self.put(key, "${n}", expires > 0 ? expires - Time.now() : 0);
             return n;
+        }
+        fn ttl(key: string) -> long {
+            let raw = self.rawEntry(key);
+            if (raw.size() == 0) { return -1; }
+            let expires = Integer.parseOr(raw[0], 0);
+            return expires == 0 ? 0 : expires - Time.now();
+        }
+        // [expiry, value] of a live entry, or [] when missing or expired.
+        private fn rawEntry(key: string) -> Array<string> {
+            let raw = new File(self.path(key)).readOr("");
+            let nl = Str.indexOf(raw, "\n");
+            if (nl < 0) { return new Array<string>(); }
+            let expires = Integer.parseOr(raw[..nl], -1);
+            if (expires > 0 && expires <= Time.now()) { return new Array<string>(); }
+            return [raw[..nl], raw[nl + 1..]];
         }
         fn flush() {
             for (name in Dir.list(self.dir)) {

@@ -44,6 +44,19 @@ namespace cache {
                 });
             });
         }
+        // SET NX: atomic on the server.
+        fn add(key: string, value: string, ttlSeconds: long) -> bool {
+            return ttlSeconds > 0 ? self.conn.set(self.prefix + key, value, ttlSeconds, 0, true) : self.conn.set(self.prefix + key, value, 0, 0, true);
+        }
+        // Compare and delete in one script (no other client can step in between).
+        fn forgetIfValue(key: string, value: string) -> bool {
+            let r = self.conn.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", [self.prefix + key], [value]);
+            return r == 1;
+        }
+        fn ttl(key: string) -> long {
+            let t = self.conn.ttl(self.prefix + key);
+            return t == -1 ? 0 : (t == -2 ? -1 : t);
+        }
         // Deletes every key under this store's prefix (SCAN, not FLUSHDB: the
         // database may hold other things), one DEL per SCAN step.
         fn flush() {

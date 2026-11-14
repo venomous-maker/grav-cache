@@ -75,8 +75,44 @@ fn checkStore(store: CacheStore) {
     let got = repo.many(["x", "y", "nope"]);
     assertEq("${got.size()} ${got["x"]} ${got["y"]}", "2 1 2");
 
+    // add(): only when missing.
+    assertEq("${repo.add("solo", "first", 60)} ${repo.add("solo", "second", 60)} ${repo.get("solo")}", "true false first");
+
+    // Locks: one owner at a time, released only by its owner.
+    let a = repo.lock("job", 10);
+    let b = repo.lock("job", 10);
+    assertEq("${a.get()} ${b.get()} ${a.isOwnedByCurrentProcess()} ${b.release()} ${a.isLocked()}", "true false true false true");
+    assertEq("${repo.restoreLock("job", a.owner()).release()} ${a.isLocked()} ${b.get()}", "true false true");
+    b.release();
+    let ran = new Array<bool>();
+    assertEq(repo.lock("once", 5).run(fn() { ran.push(true); }), true);
+    let timedOut = false;
+    repo.lock("held", 5).get();
+    let waiter = repo.lock("held", 5);
+    waiter.retryMs = 50;
+    try { waiter.block(0); } catch (e: LockTimeoutException) { timedOut = true; }
+    assertEq("${ran.size()} ${timedOut}", "1 true");
+
+    // Rate limiting.
+    let limiter = repo.limiter();
+    limiter.clear("login:ip");
+    assertEq("${limiter.hit("login:ip", 2)} ${limiter.hit("login:ip", 2)} ${limiter.tooManyAttempts("login:ip", 2)} ${limiter.remaining("login:ip", 5)}", "1 2 true 3");
+    assertEq(limiter.availableIn("login:ip") >= 1, true);
+    let sent = new Array<bool>();
+    assertEq("${limiter.attempt("send", 1, fn() { sent.push(true); })} ${limiter.attempt("send", 1, fn() { sent.push(true); })} ${sent.size()}", "true false 1");
+    limiter.clear("send");
+    Time.sleepMs(2100);
+    assertEq("${limiter.tooManyAttempts("login:ip", 2)} ${limiter.attempts("login:ip")}", "false 0");    // the window passed
+
     repo.flush();
     assertEq(repo.has("permanent"), false);
+}
+
+test "MemoryCacheStore" {
+    checkStore(new MemoryCacheStore())
+    let small = new MemoryCacheStore(2)
+    small.put("a", "1", 0); small.put("b", "2", 0); small.put("c", "3", 0)
+    assertEq("${small.get("a") == null} ${small.get("c")} ${small.size()}", "true 3 2")       // the oldest went
 }
 
 test "FileCacheStore" {

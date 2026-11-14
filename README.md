@@ -1,10 +1,10 @@
 # grav-cache
 
 A cache for [Grav](https://github.com/venomous-maker/grav): `get`/`put`/
-`remember` a value under a key, on a file, [Redis](https://github.com/venomous-maker/grav-redis),
+`remember` a value under a key, in memory, on a file, [Redis](https://github.com/venomous-maker/grav-redis),
 or a database table through [Orbit](https://github.com/venomous-maker/grav-orbit) —
-one of Laravel's Cache facade, in the manner of its file, Redis and database
-drivers.
+one of Laravel's Cache facade, in the manner of its array, file, Redis and
+database drivers — with atomic locks and a rate limiter on top of any store.
 
 ```grav
 import "std"
@@ -74,7 +74,47 @@ Each of these is also a method on `CacheRepository`, for code that was
 handed one explicitly instead of going through the facade:
 `new CacheRepository(store).get("key")`.
 
+## Locks
+
+`Cache.lock(name, seconds)` is a lock that processes and threads share through
+the store: one owner at a time, lapsing after `seconds` (so a crashed holder
+cannot keep it), released only by its owner.
+
+```grav
+let lock = Cache.lock("reports:daily", 120)
+if (lock.get()) { try { build() } finally { lock.release() } }
+lock.run(fn() { build() })                   // takes it, runs, lets go (false when taken)
+lock.blockRun(5, fn() { build() })           // waits up to 5 s (LockTimeoutException after)
+Cache.restoreLock("reports:daily", ownerToken).release()   // from the process handed the token
+```
+
+Taking it is `add` (store only when missing) and releasing is
+`forgetIfValue` (delete only while it holds this owner's token); both are
+atomic on Redis (`SET NX`, and a compare-and-delete script) and in memory.
+The file and Orbit stores check and then write, which suits one process.
+
+## Rate limiting
+
+`Cache.limiter()` counts attempts in a window, as Laravel's `RateLimiter`:
+
+```grav
+let limiter = Cache.limiter()
+if (limiter.tooManyAttempts("login:" + ip, 5)) { return tooMany(limiter.availableIn("login:" + ip)) }
+limiter.hit("login:" + ip, 60)                       // a 60-second window from the first hit
+limiter.attempt("sms:" + userId, 3, fn() { send() }, 3600)   // false once the limit is reached
+limiter.remaining(key, 5)  limiter.attempts(key)  limiter.clear(key)
+```
+
 ## Stores
+
+**Memory** — this process's memory: tests, one-process apps, a fast first
+level in front of a shared store. Thread-safe; `add`, `increment` and
+`forgetIfValue` are atomic.
+
+```grav
+Cache.store(new MemoryCacheStore())
+Cache.store(new MemoryCacheStore(10000), "local")   // at most 10,000 keys: expired, then oldest, go first
+```
 
 **File** — one file per key, under a directory; no dependency beyond the
 standard library.
@@ -84,8 +124,9 @@ Cache.store(new FileCacheStore("/var/cache/app"))
 ```
 
 Each write goes to a temp file, then an atomic rename, so a reader never
-sees a half-written entry. `increment()` is not atomic across processes (a
-plain file has no server-side add); fine within one process.
+sees a half-written entry. `increment()` keeps the key's expiry, but is not
+atomic across processes (a plain file has no server-side add); fine within
+one process.
 
 **Redis** — through [grav-redis](https://github.com/venomous-maker/grav-redis).
 
@@ -116,7 +157,8 @@ and queries like any other model. `increment()` runs inside a transaction
 ## Writing your own store
 
 Implement `CacheStore` (`get`, `put`, `forget`, `increment`, `flush`;
-`has` and `forever` already have sensible defaults) and give it to
+`has`, `forever`, `add`, `forgetIfValue` and `ttl` already have defaults,
+which a store that can do them atomically overrides) and give it to
 `Cache.store(...)` — `CacheRepository` adds the JSON encoding, `remember`,
 `many`/`putMany` and the rest on top of any store the same way.
 

@@ -43,7 +43,7 @@ namespace cache {
         // Stores every one of `values`; a store that can write several in one
         // go overrides it.
         fn putMany(values: HashMap<string, string>, ttlSeconds: long) {
-            for (k in values.keys()) { self.put(k, values[k], ttlSeconds); }
+            for ((k, x) in values) { self.put(k, x, ttlSeconds); }
         }
         // Stores it only when the key is missing; whether it did. Atomic where
         // the store can be (Redis: SET NX; memory: under its lock); this default
@@ -83,7 +83,7 @@ namespace cache {
             if (v is HashMap<string, any>) {
                 let o = Json.object();
                 let m = v as HashMap<string, any>;
-                for (k in m.keys()) { o.set(k, CacheValue.toJson(m[k])); }
+                for ((k, x) in m) { o.set(k, CacheValue.toJson(x)); }
                 return o;
             }
             if (v is Array<any>) {

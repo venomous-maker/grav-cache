@@ -6,6 +6,8 @@ compiler versions it builds with.
 
 ## Unreleased
 
+- Uses the newer releases of grav-orbit, grav-db (faster row loading and query building in grav-orbit and grav-db).
+
 ## 0.1.0 (2026-11-19)
 
 The first tagged release. Needs grav 1.7.0 or newer.

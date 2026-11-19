@@ -1,5 +1,6 @@
 name = "grav-cache"
 lib = "src/all.grav"
+grav = ">=1.7.0"
 paths = ["src"]
 
 [dependencies]

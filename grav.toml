@@ -5,4 +5,4 @@ paths = ["src"]
 
 [dependencies]
 grav-redis = "github.com/venomous-maker/grav-redis@v0.1.0"
-grav-orbit = "github.com/venomous-maker/grav-orbit@v0.1.0"
+grav-orbit = "github.com/venomous-maker/grav-orbit@v0.1.1"

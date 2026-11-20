@@ -6,6 +6,16 @@ compiler versions it builds with.
 
 ## Unreleased
 
+### Performance
+
+- Numbers, booleans, `null` and strings without escapes are stored and read
+  back without building a JSON tree: a memory-store `get` of a number is more
+  than twice as fast, and `put` nearly so ([bench/README.md](bench/README.md),
+  new). A map is read by walking the parsed object's members instead of
+  looking up each key, and `putMany` encodes with a loop instead of a closure.
+- `FileCacheStore` names a key's file (its FNV-1a hash in hex) directly
+  instead of formatting and padding two halves.
+
 ## 0.2.0 (2026-11-20)
 
 ### Requirements

@@ -83,9 +83,13 @@ namespace cache {
                 h = h ^ (key[i] as long);
                 h = h * (0x100000001b3 as long);
             }
-            let hi = ((h >> 32) & 0xffffffff) as int;
-            let lo = (h & 0xffffffff) as int;
-            return Str.padLeft(Format.hex(hi), 8, "0") + Str.padLeft(Format.hex(lo), 8, "0");
+            let sb = new StringBuilder();
+            sb.reserve(16);
+            for (k in 0..16) { // 16 hex digits, most significant first
+                let d = ((h >> ((15 - k) * 4)) & 15) as int;
+                sb.appendChar(d < 10 ? 48 + d : 87 + d);
+            }
+            return sb.toString();
         }
     }
 }

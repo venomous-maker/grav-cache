@@ -1,0 +1,36 @@
+// bench.grav — the cost of the typed cache layer over a memory and a file
+// store: put, get (a hit), and remember (a hit), of a scalar and of a small
+// map, n times each. See bench/README.md.
+import "std"
+import "../src/all.grav"
+use cache.*
+
+fn run(label: string, repo: CacheRepository, n: int) {
+    let row = new HashMap<string, any>();
+    row.put("id", 42);
+    row.put("name", "Ada Lovelace");
+    row.put("tags", ["admin", "math"]);
+    let t0 = Time.nowMs();
+    for (i in 0..n) { repo.put("k${i % 100}", i); }
+    let putMs = Time.nowMs() - t0;
+    let t1 = Time.nowMs();
+    let sum: long = 0;
+    for (i in 0..n) { sum += repo.get("k${i % 100}", 0) as long; }
+    let getMs = Time.nowMs() - t1;
+    repo.put("row", row);
+    let t2 = Time.nowMs();
+    let hits = 0;
+    for (i in 0..n) {
+        let r = repo.remember("row", 60, fn() -> any { return row; }) as HashMap<string, any>;
+        if (r.size() == 3) { hits += 1; }
+    }
+    let rememberMs = Time.nowMs() - t2;
+    print("${label}: put=${putMs}ms get=${getMs}ms remember(map)=${rememberMs}ms (${sum > 0} ${hits})");
+}
+
+fn main() {
+    let n = Integer.parseOr(argc() > 1 ? argv(1) : "20000", 20000) as int;
+    let dir = argc() > 2 ? argv(2) : "/tmp/grav_cache_bench";
+    run("memory", new CacheRepository(new MemoryCacheStore()), n);
+    run("file  ", new CacheRepository(new FileCacheStore(dir)), n);
+}

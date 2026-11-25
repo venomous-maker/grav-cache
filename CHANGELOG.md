@@ -6,6 +6,8 @@ compiler versions it builds with.
 
 ## Unreleased
 
+## 0.2.2 (2026-11-25)
+
 ### Dependencies
 
 - Uses grav-orbit 0.3.0 (from their GitHub tags).

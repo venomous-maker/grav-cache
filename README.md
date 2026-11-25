@@ -6,7 +6,7 @@ or a database table through [Orbit](https://github.com/venomous-maker/grav-orbit
 one of Laravel's Cache facade, in the manner of its array, file, Redis and
 database drivers — with atomic locks and a rate limiter on top of any store.
 
-```grav
+```typescript
 import "std"
 import "grav-cache"
 
@@ -28,7 +28,7 @@ fn main() {
 grav add github.com/venomous-maker/grav-cache
 ```
 
-```grav
+```typescript
 import "grav-cache"
 use cache.*
 ```
@@ -49,7 +49,7 @@ Anything else (your own class) is a `ValueError`: turn it into a map first
 
 ## The facade
 
-```grav
+```typescript
 Cache.store(new FileCacheStore("/var/cache/app"))          // the default store
 Cache.store(new RedisCacheStore(redisConn), "sessions")     // a named one
 
@@ -80,7 +80,7 @@ handed one explicitly instead of going through the facade:
 the store: one owner at a time, lapsing after `seconds` (so a crashed holder
 cannot keep it), released only by its owner.
 
-```grav
+```typescript
 let lock = Cache.lock("reports:daily", 120)
 if (lock.get()) { try { build() } finally { lock.release() } }
 lock.run(fn() { build() })                   // takes it, runs, lets go (false when taken)
@@ -97,7 +97,7 @@ The file and Orbit stores check and then write, which suits one process.
 
 `Cache.limiter()` counts attempts in a window, as Laravel's `RateLimiter`:
 
-```grav
+```typescript
 let limiter = Cache.limiter()
 if (limiter.tooManyAttempts("login:" + ip, 5)) { return tooMany(limiter.availableIn("login:" + ip)) }
 limiter.hit("login:" + ip, 60)                       // a 60-second window from the first hit
@@ -111,7 +111,7 @@ limiter.remaining(key, 5)  limiter.attempts(key)  limiter.clear(key)
 level in front of a shared store. Thread-safe; `add`, `increment` and
 `forgetIfValue` are atomic.
 
-```grav
+```typescript
 Cache.store(new MemoryCacheStore())
 Cache.store(new MemoryCacheStore(10000), "local")   // at most 10,000 keys: expired, then oldest, go first
 ```
@@ -119,7 +119,7 @@ Cache.store(new MemoryCacheStore(10000), "local")   // at most 10,000 keys: expi
 **File** — one file per key, under a directory; no dependency beyond the
 standard library.
 
-```grav
+```typescript
 Cache.store(new FileCacheStore("/var/cache/app"))
 ```
 
@@ -130,7 +130,7 @@ one process.
 
 **Redis** — through [grav-redis](https://github.com/venomous-maker/grav-redis).
 
-```grav
+```typescript
 Cache.store(new RedisCacheStore(RedisConnection.open("redis://localhost:6379/0")))
 Cache.store(new RedisCacheStore(conn, "myapp:cache:"), "sessions")   // a key prefix (default "cache:")
 ```
@@ -142,7 +142,7 @@ and `putMany()` one pipelined round trip, however many keys they cover.
 
 **Orbit** — a table, through [grav-orbit](https://github.com/venomous-maker/grav-orbit).
 
-```grav
+```typescript
 DB.connect(Sqlite.open("app.db"))        // or MySql/Postgres, as usual for Orbit
 CacheEntry.createTable()
 Cache.store(new OrbitCacheStore())

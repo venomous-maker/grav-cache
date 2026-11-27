@@ -1,4 +1,4 @@
 # grav.lock: exact commits of the installed dependencies (generated; commit this file)
-grav-redis = { source = "github.com/venomous-maker/grav-redis", version = "v0.2.1", commit = "f3dff2ec9efc3f53d2cd3c394fc412e4776244c3" }
+grav-redis = { source = "github.com/venomous-maker/grav-redis", version = "v0.2.2", commit = "d106c93e198e605d898833211723b70e6b80a8fb" }
 grav-orbit = { source = "github.com/venomous-maker/grav-orbit", version = "v0.3.1", commit = "c2dbda3f88353d12c07850b118eacc45d57d11cd" }
 grav-db = { source = "github.com/venomous-maker/grav-db", version = "v0.2.1", commit = "22e0d204526df76e4b6f8c83d35799c975c9ecba" }
